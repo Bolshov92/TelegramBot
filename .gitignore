@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+.env
+
+# Ignore application.properties to keep sensitive data safe
+src/main/resources/application.properties
