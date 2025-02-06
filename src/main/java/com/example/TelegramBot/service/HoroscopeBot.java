@@ -5,7 +5,12 @@ import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Component
 public class HoroscopeBot extends TelegramLongPollingBot {
@@ -32,23 +37,68 @@ public class HoroscopeBot extends TelegramLongPollingBot {
             String messageText = update.getMessage().getText();
             long chatId = update.getMessage().getChatId();
 
-            if (messageText.equals("/start")) {
-                startCommandReceived(chatId, update.getMessage().getChat().getFirstName());
-            } else {
-                sendTextMessage(chatId, "Please type /start to begin.");
+            switch (messageText) {
+                case "/start":
+                    sendWelcomeMessage(chatId);
+                    break;
+
+                case "\uD83D\uDD2E Гороскоп":
+                    sendHoroscope(chatId);
+                    break;
+
+                case "\uD83D\uDCA1 Мотивация":
+                    sendMotivation(chatId);
+                    break;
+
+                default:
+                    sendTextMessage(chatId, "Пожалуйста, выберите один из доступных вариантов ⬇");
+                    break;
             }
         }
     }
 
-    public void startCommandReceived(long chatId, String name) {
-        String answer = "Hi, " + name + ", nice to meet you! I'll be sending you your personal horoscope every day.";
-        sendTextMessage(Long.parseLong(String.valueOf(chatId)), answer);
+    private void sendWelcomeMessage(long chatId) {
+        String welcomeText = "Welcome to Bolshov Personal Bot!\n\nВыбери, что тебе интересно:";
+        SendMessage message = new SendMessage();
+        message.setChatId(String.valueOf(chatId));
+        message.setText(welcomeText);
+        message.setReplyMarkup(getMainMenuKeyboard());
+        sendMessage(message);
+    }
+
+    private ReplyKeyboardMarkup getMainMenuKeyboard() {
+        ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
+        keyboardMarkup.setResizeKeyboard(true);
+
+        List<KeyboardRow> keyboard = new ArrayList<>();
+        KeyboardRow row = new KeyboardRow();
+
+        row.add("🔮 Гороскоп");
+        row.add("💡 Мотивация");
+
+        keyboard.add(row);
+        keyboardMarkup.setKeyboard(keyboard);
+        return keyboardMarkup;
+    }
+
+    private void sendHoroscope(long chatId) {
+        String horoscope = "Ваш гороскоп на сегодня: 🌟 ... ";
+        sendTextMessage(chatId, horoscope);
+    }
+
+    private void sendMotivation(long chatId) {
+        String motivation = "Сегодняшняя мотивация: 🚀 ...";
+        sendTextMessage(chatId, motivation);
     }
 
     private void sendTextMessage(long chatId, String text) {
         SendMessage message = new SendMessage();
-        message.setChatId(chatId);
+        message.setChatId(String.valueOf(chatId));
         message.setText(text);
+        sendMessage(message);
+    }
+
+    private void sendMessage(SendMessage message) {
         try {
             execute(message);
         } catch (TelegramApiException e) {
