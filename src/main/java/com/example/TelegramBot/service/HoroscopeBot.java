@@ -19,13 +19,14 @@ public class HoroscopeBot extends TelegramLongPollingBot {
     private final BotConfig config;
     private final HoroscopeService horoscopeService;
     private final TranslationService translationService;
+    private final UserService userService;
     private final UserRepository userRepository;
-    private final Map<Long, String> userLanguageMap = new HashMap<>();
 
-    public HoroscopeBot(BotConfig config, HoroscopeService horoscopeService, TranslationService translationService, UserRepository userRepository) {
+    public HoroscopeBot(BotConfig config, HoroscopeService horoscopeService, TranslationService translationService, UserService userService, UserRepository userRepository) {
         this.config = config;
         this.horoscopeService = horoscopeService;
         this.translationService = translationService;
+        this.userService = userService;
         this.userRepository = userRepository;
     }
 
@@ -44,39 +45,121 @@ public class HoroscopeBot extends TelegramLongPollingBot {
         if (update.hasMessage() && update.getMessage().hasText()) {
             long chatId = update.getMessage().getChatId();
             String messageText = update.getMessage().getText();
-            String username = update.getMessage().getChat().getUserName();
-            String firstName = update.getMessage().getChat().getFirstName();
-            String lastName = update.getMessage().getChat().getLastName();
+            String firstName = update.getMessage().getFrom().getFirstName();
+            String lastName = update.getMessage().getFrom().getLastName();
+            String username = update.getMessage().getFrom().getUserName();
 
-            if (!isUserRegistered(chatId)) {
-                registerUser(chatId, username, firstName, lastName);
+            Optional<User> optionalUser = userRepository.findByChatId(chatId);
+            if (optionalUser.isEmpty()) {
+                userService.registerUser(chatId, firstName, lastName, username);
                 sendLanguageSelection(chatId);
             } else {
-                handleUserCommands(chatId, messageText);
+                User user = optionalUser.get();
+                handleUserInput(chatId, messageText, user);
             }
         }
     }
 
-    private boolean isUserRegistered(long chatId) {
-        return userRepository.findByChatId(chatId).isPresent();
-    }
-
-    private void registerUser(long chatId, String username, String firstName, String lastName) {
-        if (!isUserRegistered(chatId)) {
-            User newUser = new User(chatId, firstName, lastName, username, LocalDateTime.now());
-            userRepository.save(newUser);
+    private void handleUserInput(Long chatId, String messageText, User user) {
+        if (user.getLanguage() == null) {
+            handleLanguageSelection(chatId, messageText, user);
+        } else if (user.getSubscribedSign() == null) {
+            handleZodiacSelection(chatId, messageText, user);
+        } else {
+            handleMenuSelection(chatId, messageText, user);
         }
     }
 
-    private void sendLanguageSelection(long chatId) {
+    private void handleLanguageSelection(Long chatId, String messageText, User user) {
+        if (messageText.equals("🇷🇺 Русский") || messageText.equals("🇬🇧 English")) {
+            String language = messageText.equals("🇷🇺 Русский") ? "ru" : "en";
+            userService.setLanguage(chatId, language);  // Обновляем язык в БД
+
+            System.out.println("Language selected: " + language);
+
+            sendWelcomeMessage(chatId, language, user.getFirstName());
+        } else {
+            sendTextMessage(chatId, "🌍 Выберите язык, нажав на кнопку ниже.");
+            sendLanguageSelection(chatId);
+        }
+    }
+
+
+    private void handleZodiacSelection(Long chatId, String messageText, User user) {
+        if (isZodiacSign(messageText)) {
+            user.setSubscribedSign(messageText);
+            userRepository.save(user);
+            sendHoroscope(chatId, messageText, user.getLanguage());
+            sendMenu(chatId, user.getLanguage());
+        } else {
+            sendZodiacKeyboard(chatId, user.getLanguage());
+        }
+    }
+
+    private void handleMenuSelection(Long chatId, String messageText, User user) {
+        switch (messageText) {
+            case "🔄 Сменить подписку":
+            case "🔄 Change Subscription":
+                sendZodiacKeyboard(chatId, user.getLanguage());
+                user.setSubscribedSign(null);
+                userRepository.save(user);
+
+                if (user.getLanguage() == null) {
+                    sendLanguageSelection(chatId);
+                }
+                break;
+
+            case "❌ Отписаться":
+            case "❌ Unsubscribe":
+                user.setSubscribedSign(null);
+                user.setLanguage(null);
+                userRepository.save(user);
+                sendTextMessage(chatId, "🚫 Вы отписались от гороскопа. Пожалуйста, выберите язык.");
+                sendLanguageSelection(chatId);
+                break;
+
+            case "🇷🇺 Русский":
+            case "🇬🇧 English":
+                String language = messageText.equals("🇷🇺 Русский") ? "ru" : "en";
+                userService.setLanguage(chatId, language);
+                sendTextMessage(chatId, language.equals("ru") ? "🇷🇺 Язык изменен на русский." : "🇬🇧 Language changed to English.");
+                break;
+
+            default:
+                sendHoroscope(chatId, user.getSubscribedSign(), user.getLanguage());
+                sendMenu(chatId, user.getLanguage());
+                break;
+        }
+    }
+
+
+    private void sendMenu(Long chatId, String language) {
         SendMessage message = new SendMessage();
         message.setChatId(String.valueOf(chatId));
-        message.setText("🌍 Выберите язык / Choose a language:");
-        message.setReplyMarkup(getLanguageKeyboard());
+        message.setText(language.equals("ru")
+                ? "📌 Вы подписаны на ежедневный гороскоп!\nВыберите действие:"
+                : "📌 You are subscribed to the daily horoscope!\nChoose an action:");
+
+        ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
+        keyboardMarkup.setResizeKeyboard(true);
+
+        List<KeyboardRow> keyboard = new ArrayList<>();
+        KeyboardRow row1 = new KeyboardRow();
+        row1.add(language.equals("ru") ? "🔄 Сменить подписку" : "🔄 Change Subscription");
+        row1.add(language.equals("ru") ? "❌ Отписаться" : "❌ Unsubscribe");
+
+        keyboard.add(row1);
+        keyboardMarkup.setKeyboard(keyboard);
+
+        message.setReplyMarkup(keyboardMarkup);
         sendMessage(message);
     }
 
-    private ReplyKeyboardMarkup getLanguageKeyboard() {
+    private void sendLanguageSelection(Long chatId) {
+        SendMessage message = new SendMessage();
+        message.setChatId(String.valueOf(chatId));
+        message.setText("🌍 Выберите язык / Choose a language:");
+
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
         keyboardMarkup.setResizeKeyboard(true);
 
@@ -87,123 +170,89 @@ public class HoroscopeBot extends TelegramLongPollingBot {
 
         keyboard.add(row);
         keyboardMarkup.setKeyboard(keyboard);
-        return keyboardMarkup;
+
+        message.setReplyMarkup(keyboardMarkup);
+        sendMessage(message);
     }
 
-    private void handleUserCommands(long chatId, String messageText) {
-        if (!userLanguageMap.containsKey(chatId)) {
-            handleLanguageSelection(chatId, messageText);
-            return;
-        }
+    private void sendWelcomeMessage(Long chatId, String language, String firstName) {
+        String text = language.equals("ru")
+                ? "Привет, " + firstName + "! Добро пожаловать! Выберите знак зодиака:"
+                : "Hello, " + firstName + "! Welcome! Choose your zodiac sign:";
 
-        String userLanguage = userLanguageMap.get(chatId);
-
-        switch (messageText) {
-            case "🔮 Гороскоп":
-                sendZodiacKeyboard(chatId, userLanguage);
-                break;
-            default:
-                if (isZodiacSign(messageText)) {
-                    sendHoroscope(chatId, messageText);
-                } else {
-                    sendTextMessage(chatId, userLanguage.equals("ru") ? "Пожалуйста, выберите вариант ⬇" :
-                            "Please choose an option ⬇");
-                }
-                break;
-        }
+        sendTextMessage(chatId, text);
+        sendZodiacKeyboard(chatId, language);
     }
 
-    private void handleLanguageSelection(long chatId, String messageText) {
+    public void sendHoroscope(long chatId, String zodiacSign, String language) {
         Optional<User> userOptional = userRepository.findByChatId(chatId);
 
         if (userOptional.isPresent()) {
             User user = userOptional.get();
-            String firstName = user.getFirstName();
-            String lastName = user.getLastName();
 
-            switch (messageText) {
-                case "🇷🇺 Русский":
-                    userLanguageMap.put(chatId, "ru");
-                    sendWelcomeMessage(chatId, firstName, lastName, "ru");
-                    break;
-                case "🇬🇧 English":
-                    userLanguageMap.put(chatId, "en");
-                    sendWelcomeMessage(chatId, firstName, lastName, "en");
-                    break;
-                default:
-                    sendLanguageSelection(chatId);
-                    break;
-            }
-        } else {
-            sendLanguageSelection(chatId);
+            String userLanguage = user.getLanguage() != null ? user.getLanguage() : "ru";
+
+            String sign = getEnglishSign(zodiacSign);
+            String horoscope = horoscopeService.getHoroscope(sign);
+
+            String translatedHoroscope = translationService.translate(horoscope, userLanguage);
+            sendTextMessage(chatId, "🔮 " + translatedHoroscope);
         }
     }
 
-
-    private void sendWelcomeMessage(long chatId, String firstName, String lastName, String language) {
-        String fullName = (firstName != null ? firstName : "") + (lastName != null ? " " + lastName : "");
-
-        String text = language.equals("ru") ?
-                String.format("Привет, %s! 👋 Добро пожаловать в бот гороскопов!\n\nВыберите ваш знак зодиака:", fullName) :
-                String.format("Hello, %s! 👋 Welcome to the Horoscope Bot!\n\nChoose your zodiac sign:", fullName);
-
+    private void sendZodiacKeyboard(Long chatId, String language) {
         SendMessage message = new SendMessage();
         message.setChatId(String.valueOf(chatId));
-        message.setText(text);
-        message.setReplyMarkup(getZodiacKeyboard(language));
-        sendMessage(message);
-    }
+        message.setText(language.equals("ru")
+                ? "🔮 Выберите ваш знак зодиака:"
+                : "🔮 Choose your zodiac sign:");
 
-    private void sendZodiacKeyboard(long chatId, String language) {
-        SendMessage message = new SendMessage();
-        message.setChatId(String.valueOf(chatId));
-        message.setText(language.equals("ru") ? "Выберите свой знак зодиака:" : "Choose your zodiac sign:");
-        message.setReplyMarkup(getZodiacKeyboard(language));
-        sendMessage(message);
-    }
-
-    private ReplyKeyboardMarkup getZodiacKeyboard(String language) {
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
         keyboardMarkup.setResizeKeyboard(true);
+
         List<KeyboardRow> keyboard = new ArrayList<>();
 
-        if ("en".equals(language)) {
-            keyboard.add(createRow("♈ Aries", "♉ Taurus", "♊ Gemini"));
-            keyboard.add(createRow("♋ Cancer", "♌ Leo", "♍ Virgo"));
-            keyboard.add(createRow("♎ Libra", "♏ Scorpio", "♐ Sagittarius"));
-            keyboard.add(createRow("♑ Capricorn", "♒ Aquarius", "♓ Pisces"));
-        } else {
-            keyboard.add(createRow("♈ Овен", "♉ Телец", "♊ Близнецы"));
-            keyboard.add(createRow("♋ Рак", "♌ Лев", "♍ Дева"));
-            keyboard.add(createRow("♎ Весы", "♏ Скорпион", "♐ Стрелец"));
-            keyboard.add(createRow("♑ Козерог", "♒ Водолей", "♓ Рыбы"));
-        }
+        KeyboardRow row1 = new KeyboardRow();
+        row1.add(language.equals("ru") ? "♈ Овен" : "♈ Aries");
+        row1.add(language.equals("ru") ? "♉ Телец" : "♉ Taurus");
+        row1.add(language.equals("ru") ? "♊ Близнецы" : "♊ Gemini");
+        row1.add(language.equals("ru") ? "♋ Рак" : "♋ Cancer");
+
+        KeyboardRow row2 = new KeyboardRow();
+        row2.add(language.equals("ru") ? "♌ Лев" : "♌ Leo");
+        row2.add(language.equals("ru") ? "♍ Дева" : "♍ Virgo");
+        row2.add(language.equals("ru") ? "♎ Весы" : "♎ Libra");
+        row2.add(language.equals("ru") ? "♏ Скорпион" : "♏ Scorpio");
+
+        KeyboardRow row3 = new KeyboardRow();
+        row3.add(language.equals("ru") ? "♐ Стрелец" : "♐ Sagittarius");
+        row3.add(language.equals("ru") ? "♑ Козерог" : "♑ Capricorn");
+        row3.add(language.equals("ru") ? "♒ Водолей" : "♒ Aquarius");
+        row3.add(language.equals("ru") ? "♓ Рыбы" : "♓ Pisces");
+
+        keyboard.add(row1);
+        keyboard.add(row2);
+        keyboard.add(row3);
 
         keyboardMarkup.setKeyboard(keyboard);
-        return keyboardMarkup;
-    }
-
-    private KeyboardRow createRow(String... buttons) {
-        KeyboardRow row = new KeyboardRow();
-        row.addAll(Arrays.asList(buttons));
-        return row;
-    }
-
-    private void sendHoroscope(long chatId, String zodiacSign) {
-        String sign = getEnglishSign(zodiacSign);
-        String horoscope = horoscopeService.getHoroscope(sign);
-
-        String userLanguage = userLanguageMap.getOrDefault(chatId, "ru");
-        String translatedHoroscope = translationService.translate(horoscope, userLanguage);
-
-        sendTextMessage(chatId, "🔮 " + translatedHoroscope);
+        message.setReplyMarkup(keyboardMarkup);
+        sendMessage(message);
     }
 
     private boolean isZodiacSign(String text) {
-        return List.of("♈ Овен", "♉ Телец", "♊ Близнецы", "♋ Рак", "♌ Лев", "♍ Дева",
-                        "♎ Весы", "♏ Скорпион", "♐ Стрелец", "♑ Козерог", "♒ Водолей", "♓ Рыбы",
-                        "♈ Aries", "♉ Taurus", "♊ Gemini", "♋ Cancer", "♌ Leo", "♍ Virgo",
-                        "♎ Libra", "♏ Scorpio", "♐ Sagittarius", "♑ Capricorn", "♒ Aquarius", "♓ Pisces")
+        return List.of(
+                        "♈ Овен", "♈ Aries",
+                        "♉ Телец", "♉ Taurus",
+                        "♊ Близнецы", "♊ Gemini",
+                        "♋ Рак", "♋ Cancer",
+                        "♌ Лев", "♌ Leo",
+                        "♍ Дева", "♍ Virgo",
+                        "♎ Весы", "♎ Libra",
+                        "♏ Скорпион", "♏ Scorpio",
+                        "♐ Стрелец", "♐ Sagittarius",
+                        "♑ Козерог", "♑ Capricorn",
+                        "♒ Водолей", "♒ Aquarius",
+                        "♓ Рыбы", "♓ Pisces")
                 .contains(text);
     }
 

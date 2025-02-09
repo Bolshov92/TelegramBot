@@ -5,6 +5,7 @@ import com.example.TelegramBot.repository.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 
 @Service
 public class UserService {
@@ -19,11 +20,22 @@ public class UserService {
     }
 
     public void registerUser(Long chatId, String firstName, String lastName, String username) {
-        if (isUserRegistered(chatId)) {
-            return;
+        Optional<User> existingUser = userRepository.findByChatId(chatId);
+        if (existingUser.isEmpty()) {
+            User newUser = new User(chatId, firstName, lastName, username, null, null, LocalDateTime.now());
+            userRepository.save(newUser);
+        } else {
+            System.out.println("User already registered with language: " + existingUser.get().getLanguage());
         }
-
-        User newUser = new User(chatId, firstName, lastName, username, LocalDateTime.now());
-        userRepository.save(newUser);
     }
+
+    public void setLanguage(Long chatId, String language) {
+        Optional<User> userOptional = userRepository.findByChatId(chatId);
+        if (userOptional.isPresent()) {
+            User user = userOptional.get();
+            user.setLanguage(language);
+            userRepository.save(user);
+        }
+    }
+
 }
