@@ -1,6 +1,8 @@
 package com.example.TelegramBot.service;
 
 import com.example.TelegramBot.config.BotConfig;
+import com.example.TelegramBot.entity.User;
+import com.example.TelegramBot.repository.UserRepository;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
@@ -9,6 +11,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMar
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
+import java.time.LocalDateTime;
 import java.util.*;
 
 @Component
@@ -16,13 +19,14 @@ public class HoroscopeBot extends TelegramLongPollingBot {
     private final BotConfig config;
     private final HoroscopeService horoscopeService;
     private final TranslationService translationService;
-
+    private final UserRepository userRepository;
     private final Map<Long, String> userLanguageMap = new HashMap<>();
 
-    public HoroscopeBot(BotConfig config, HoroscopeService horoscopeService, TranslationService translationService) {
+    public HoroscopeBot(BotConfig config, HoroscopeService horoscopeService, TranslationService translationService, UserRepository userRepository) {
         this.config = config;
         this.horoscopeService = horoscopeService;
         this.translationService = translationService;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -38,38 +42,29 @@ public class HoroscopeBot extends TelegramLongPollingBot {
     @Override
     public void onUpdateReceived(Update update) {
         if (update.hasMessage() && update.getMessage().hasText()) {
-            String messageText = update.getMessage().getText();
             long chatId = update.getMessage().getChatId();
-            String userName = update.getMessage().getChat().getFirstName();
+            String messageText = update.getMessage().getText();
+            String username = update.getMessage().getChat().getUserName();
+            String firstName = update.getMessage().getChat().getFirstName();
+            String lastName = update.getMessage().getChat().getLastName();
 
-            if (!userLanguageMap.containsKey(chatId)) {
-                handleLanguageSelection(chatId, messageText, userName);
+            if (!isUserRegistered(chatId)) {
+                registerUser(chatId, username, firstName, lastName);
+                sendLanguageSelection(chatId);
             } else {
                 handleUserCommands(chatId, messageText);
             }
         }
     }
 
-    private void handleLanguageSelection(long chatId, String messageText, String userName) {
-        switch (messageText) {
-            case "/start":
-                sendLanguageSelection(chatId);
-                break;
+    private boolean isUserRegistered(long chatId) {
+        return userRepository.findByChatId(chatId).isPresent();
+    }
 
-            case "🇷🇺 Русский":
-                userLanguageMap.put(chatId, "ru");
-                sendWelcomeMessage(chatId, userName, "ru");
-                break;
-
-            case "🇬🇧 English":
-                userLanguageMap.put(chatId, "en");
-                sendWelcomeMessage(chatId, userName, "en");
-                break;
-
-            default:
-                sendTextMessage(chatId, "Пожалуйста, выберите язык / Please select a language:");
-                sendLanguageSelection(chatId);
-                break;
+    private void registerUser(long chatId, String username, String firstName, String lastName) {
+        if (!isUserRegistered(chatId)) {
+            User newUser = new User(chatId, firstName, lastName, username, LocalDateTime.now());
+            userRepository.save(newUser);
         }
     }
 
@@ -95,58 +90,68 @@ public class HoroscopeBot extends TelegramLongPollingBot {
         return keyboardMarkup;
     }
 
-    private void sendWelcomeMessage(long chatId, String userName, String language) {
-        String welcomeText = language.equals("ru") ?
-                String.format("Привет, %s! 👋 Добро пожаловать в бот гороскопов!\n\nВыберите ваш знак зодиака:", userName) :
-                String.format("Hello, %s! 👋 Welcome to the Horoscope Bot!\n\nChoose your zodiac sign:", userName);
-
-        SendMessage message = new SendMessage();
-        message.setChatId(String.valueOf(chatId));
-        message.setText(welcomeText);
-        message.setReplyMarkup(getZodiacKeyboard(language));
-        sendMessage(message);
-    }
-
     private void handleUserCommands(long chatId, String messageText) {
-        String userLanguage = userLanguageMap.getOrDefault(chatId, "ru");
+        if (!userLanguageMap.containsKey(chatId)) {
+            handleLanguageSelection(chatId, messageText);
+            return;
+        }
+
+        String userLanguage = userLanguageMap.get(chatId);
 
         switch (messageText) {
             case "🔮 Гороскоп":
                 sendZodiacKeyboard(chatId, userLanguage);
                 break;
-
-            case "♈ Овен":
-            case "♉ Телец":
-            case "♊ Близнецы":
-            case "♋ Рак":
-            case "♌ Лев":
-            case "♍ Дева":
-            case "♎ Весы":
-            case "♏ Скорпион":
-            case "♐ Стрелец":
-            case "♑ Козерог":
-            case "♒ Водолей":
-            case "♓ Рыбы":
-            case "♈ Aries":
-            case "♉ Taurus":
-            case "♊ Gemini":
-            case "♋ Cancer":
-            case "♌ Leo":
-            case "♍ Virgo":
-            case "♎ Libra":
-            case "♏ Scorpio":
-            case "♐ Sagittarius":
-            case "♑ Capricorn":
-            case "♒ Aquarius":
-            case "♓ Pisces":
-                sendHoroscope(chatId, messageText);
-                break;
-
             default:
-                sendTextMessage(chatId, userLanguage.equals("ru") ? "Пожалуйста, выберите один из доступных вариантов ⬇" :
-                        "Please choose one of the available options ⬇");
+                if (isZodiacSign(messageText)) {
+                    sendHoroscope(chatId, messageText);
+                } else {
+                    sendTextMessage(chatId, userLanguage.equals("ru") ? "Пожалуйста, выберите вариант ⬇" :
+                            "Please choose an option ⬇");
+                }
                 break;
         }
+    }
+
+    private void handleLanguageSelection(long chatId, String messageText) {
+        Optional<User> userOptional = userRepository.findByChatId(chatId);
+
+        if (userOptional.isPresent()) {
+            User user = userOptional.get();
+            String firstName = user.getFirstName();
+            String lastName = user.getLastName();
+
+            switch (messageText) {
+                case "🇷🇺 Русский":
+                    userLanguageMap.put(chatId, "ru");
+                    sendWelcomeMessage(chatId, firstName, lastName, "ru");
+                    break;
+                case "🇬🇧 English":
+                    userLanguageMap.put(chatId, "en");
+                    sendWelcomeMessage(chatId, firstName, lastName, "en");
+                    break;
+                default:
+                    sendLanguageSelection(chatId);
+                    break;
+            }
+        } else {
+            sendLanguageSelection(chatId);
+        }
+    }
+
+
+    private void sendWelcomeMessage(long chatId, String firstName, String lastName, String language) {
+        String fullName = (firstName != null ? firstName : "") + (lastName != null ? " " + lastName : "");
+
+        String text = language.equals("ru") ?
+                String.format("Привет, %s! 👋 Добро пожаловать в бот гороскопов!\n\nВыберите ваш знак зодиака:", fullName) :
+                String.format("Hello, %s! 👋 Welcome to the Horoscope Bot!\n\nChoose your zodiac sign:", fullName);
+
+        SendMessage message = new SendMessage();
+        message.setChatId(String.valueOf(chatId));
+        message.setText(text);
+        message.setReplyMarkup(getZodiacKeyboard(language));
+        sendMessage(message);
     }
 
     private void sendZodiacKeyboard(long chatId, String language) {
@@ -160,7 +165,6 @@ public class HoroscopeBot extends TelegramLongPollingBot {
     private ReplyKeyboardMarkup getZodiacKeyboard(String language) {
         ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
         keyboardMarkup.setResizeKeyboard(true);
-
         List<KeyboardRow> keyboard = new ArrayList<>();
 
         if ("en".equals(language)) {
@@ -193,6 +197,14 @@ public class HoroscopeBot extends TelegramLongPollingBot {
         String translatedHoroscope = translationService.translate(horoscope, userLanguage);
 
         sendTextMessage(chatId, "🔮 " + translatedHoroscope);
+    }
+
+    private boolean isZodiacSign(String text) {
+        return List.of("♈ Овен", "♉ Телец", "♊ Близнецы", "♋ Рак", "♌ Лев", "♍ Дева",
+                        "♎ Весы", "♏ Скорпион", "♐ Стрелец", "♑ Козерог", "♒ Водолей", "♓ Рыбы",
+                        "♈ Aries", "♉ Taurus", "♊ Gemini", "♋ Cancer", "♌ Leo", "♍ Virgo",
+                        "♎ Libra", "♏ Scorpio", "♐ Sagittarius", "♑ Capricorn", "♒ Aquarius", "♓ Pisces")
+                .contains(text);
     }
 
     private String getEnglishSign(String sign) {
